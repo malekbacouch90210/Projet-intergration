@@ -273,4 +273,4 @@ export const updateSuspension = async (req, res) => {
     console.error("ERROR in updateSuspension:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
-};
+}; 
