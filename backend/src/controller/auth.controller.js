@@ -9,7 +9,7 @@ export const usersTab = async (req, res) => {
     const limit = 10;
     const offset = (page - 1) * limit;
 
-    // Filters
+    // Filtration
     const { status, from, to } = req.query;
 
     // Build WHERE clause dynamically
@@ -55,35 +55,6 @@ export const usersTab = async (req, res) => {
     return res.status(500).json({ message: "INTERNAL SERVER ISSUES" });
   }
 };
-//delete user:
-export const deleteUser = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // 1️⃣ Check if the user exists
-    const user = await sql`SELECT * FROM users WHERE id = ${id}`;
-    if (user.length === 0) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // 2️⃣ Delete the user
-    await sql`DELETE FROM users WHERE id = ${id}`;
-
-    // 3️⃣ Return success
-    return res.status(200).json({
-      message: "User deleted successfully",
-      deletedUser: {
-        id: user[0].id,
-        name: user[0].name,
-        email: user[0].email,
-      },
-    });
-  } catch (error) {
-    console.error("ERROR in deleteUser:", error);
-    return res.status(500).json({ message: "INTERNAL SERVER ISSUES" });
-  }
-};
-
 
 //get user details --> one specific user
 export const getUserDetails = async (req, res) => {
@@ -129,18 +100,15 @@ export const updateUserStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    // Validate ID and status
     if (!id || typeof status !== "boolean") {
       return res.status(400).json({ message: "Invalid id or status value" });
     }
 
-    // Check if user exists
     const user = await sql`SELECT * FROM users WHERE id = ${id}`;
     if (user.length === 0) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Update status
     const updatedUser = await sql`
       UPDATE users 
       SET status = ${status}, updated_at = CURRENT_TIMESTAMP 
@@ -191,12 +159,12 @@ export const searchUserByName = async (req, res) => {
   }
 };
 
-//Reset password!
+//Reset password of user 
 export const resetPassword = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1) validate user exists
+    //validate user exists
     const users = await sql`SELECT id, email, name FROM users WHERE id = ${id}`;
     if (users.length === 0) {
       return res.status(404).json({ message: "User not found" });
@@ -204,11 +172,11 @@ export const resetPassword = async (req, res) => {
 
     const user = users[0];
 
-    // 2) generate a secure token (hex) and expiry (1 hour)
+    //generate a secure token (hex) and expiry (1 hour)
     const token = crypto.randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
 
-    // 3) save token + expiry in DB
+    //save token + expiry in DB
     await sql`
       UPDATE users
       SET reset_password_token = ${token},
@@ -218,10 +186,9 @@ export const resetPassword = async (req, res) => {
     `;
 
     // 4) Return success (for testing we include the token; remove in production)
-    // In production: trigger email here (send a link like https://yourapp/reset-password?token=${token})
     return res.status(200).json({
       message: "Password reset token generated. Send it to the user's email.",
-      resetToken: token,           // ⚠️ Only for testing/dev — don't return token in prod
+      resetToken: token,           // Testing only ye bro testing onlyyyyyyyy
       expiresAt: expiresAt.toISOString(),
       userId: id,
       userEmail: user.email
@@ -231,4 +198,79 @@ export const resetPassword = async (req, res) => {
     return res.status(500).json({ message: "INTERNAL SERVER ISSUES" });
   }
   
+};
+
+//suspend user temporarelly
+export const suspendUser = async (req, res) => {
+  try {
+    const { id, duration_days, reason } = req.body;
+
+    if (!id || !duration_days || !reason) {
+      return res.status(400).json({ message: "id, duration_days, and reason are required!" });
+    }
+
+    const allowedReasons = ['Suspicious activity', 'Violation of rules', 'Security breach risk'];
+    if (!allowedReasons.includes(reason)) {
+      return res.status(400).json({ message: "Invalid suspension reason!" });
+    }
+
+    // Calculate suspension end date
+    const suspendedUntil = new Date();
+    suspendedUntil.setDate(suspendedUntil.getDate() + parseInt(duration_days));
+
+    const result = await sql`
+      UPDATE users
+      SET suspended_until = ${suspendedUntil},
+          suspension_reason = ${reason},
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id}
+      RETURNING id, name, email, suspended_until, suspension_reason
+    `;
+
+    if (result.length === 0) return res.status(404).json({ message: "User not found!" });
+
+    res.status(200).json({ message: "User suspended successfully!", user: result[0] });
+  } catch (error) {
+    console.error("ERROR in suspendUser:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+// Update user suspension details
+export const updateSuspension = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { suspended_until, suspended_reason } = req.body;
+
+    if (!suspended_until && !suspended_reason) {
+      return res.status(400).json({ message: "At least one field required!" });
+    }
+
+    const allowedReasons = ['Suspicious activity', 'Violation of rules', 'Security breach risk'];
+    if (suspended_reason && !allowedReasons.includes(suspended_reason)) {
+      return res.status(400).json({ message: "Invalid suspension reason!" });
+    }
+
+    const result = await sql`
+      UPDATE users
+      SET 
+        suspended_until = COALESCE(${suspended_until}, suspended_until),
+        suspension_reason = COALESCE(${suspended_reason}, suspension_reason),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id}
+      RETURNING id, name, email, suspended_until, suspension_reason
+    `;
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: "User not found!" });
+    }
+
+    res.status(200).json({ 
+      message: "Suspension updated successfully!", 
+      user: result[0] 
+    });
+  } catch (error) {
+    console.error("ERROR in updateSuspension:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
 };

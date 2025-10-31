@@ -16,7 +16,7 @@ export default function AppContent() {
       const username = user?.username;
       //password : hellorym
 
-      if (email === "rymbachrouch11m04@gmail.com" || username === "rymbach") {
+      if (email === "rymbachrouch11m04@gmail.com" || username === "admin") {
         navigate("/dashboard");
       }
     }

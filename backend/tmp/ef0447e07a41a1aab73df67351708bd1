@@ -1,0 +1,11 @@
+ip_address|status|reason
+193.170.1.1|true|
+193.170.2.1|false|spam
+193.170.3.1|true|
+193.170.4.1|false|hack
+193.170.5.1|false|risk
+193.170.6.1|true|
+193.170.7.1|false|spam
+193.170.8.1|true|
+193.170.9.1|false|risk
+193.170.10.1|true|
