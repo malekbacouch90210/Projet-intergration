@@ -35,6 +35,7 @@ export default function Dashboard() {
   const [allIps, setAllIps] = useState([]);
   const [ipPage, setIpPage] = useState(1);
   const [ipTotalPages, setIpTotalPages] = useState(1);
+  const [newIP, setNewIP] = useState({ ip_address: "", status: true, reason: "" });
 
   // --- Automatic blocks ---
   const [loginAttempts, setLoginAttempts] = useState([]);
@@ -173,13 +174,12 @@ export default function Dashboard() {
 
   const handleResetPassword = (id) => {
     const loadingToast = toast.loading("Resetting password...");
-    fetch(`http://localhost:3000/api/auth/usersTable/${id}/reset_password`, {
-      method: "PATCH",
+    fetch(`http://localhost:3000/api/auth/resetPassword/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
     })
-      .then(res => res.json())
-      .then(data => {
-        toast.success("✅ Password reset initiated successfully!", { id: loadingToast });
-        console.log("Reset token:", data.resetToken);
+      .then(() => {
+        toast.success("✅ Password reset successfully!", { id: loadingToast });
       })
       .catch(err => {
         console.error("Reset password error:", err);
@@ -187,36 +187,94 @@ export default function Dashboard() {
       });
   };
 
-  const saveSuspension = (id) => {
-    const loadingToast = toast.loading("Updating suspension...");
-    fetch(`http://localhost:3000/api/auth/suspend`, {
-      method: "POST",
+  const handleUpdateIPStatus = (ip_address, newStatus, reason = null) => {
+    const loadingToast = toast.loading("Updating IP status...");
+    fetch(`http://localhost:3000/api/ip/updateIP/${ip_address}`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: id,
-        duration_days: calculateDaysDifference(suspendedUntil[id]),
-        reason: suspendedReason[id] || "Suspicious activity",
+      body: JSON.stringify({ 
+        status: newStatus === "allowed",
+        reason: newStatus === "blocked" ? reason : null 
       }),
     })
       .then(() => {
-        toast.success("✅ User suspension updated successfully!", { id: loadingToast });
-        fetch(`http://localhost:3000/api/auth/usersTable?page=${userPage}`)
-          .then(res => res.json())
-          .then(data => setUsers(data.users || []));
+        setIps(prev => prev.map(ip => 
+          ip.ip_address === ip_address 
+            ? { ...ip, status: newStatus === "allowed", reason: newStatus === "blocked" ? reason : null } 
+            : ip
+        ));
+        setAllIps(prev => prev.map(ip => 
+          ip.ip_address === ip_address 
+            ? { ...ip, status: newStatus === "allowed", reason: newStatus === "blocked" ? reason : null } 
+            : ip
+        ));
+        toast.success(`✅ IP status updated to ${newStatus}!`, { id: loadingToast });
       })
       .catch(err => {
-        console.error(err);
-        toast.error("❌ Failed to update suspension!", { id: loadingToast });
+        console.error("Update IP status error:", err);
+        toast.error("❌ Failed to update IP status!", { id: loadingToast });
       });
   };
 
-  const calculateDaysDifference = (dateString) => {
-    if (!dateString) return 1;
-    const targetDate = new Date(dateString);
-    const today = new Date();
-    const diffTime = targetDate - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays > 0 ? diffDays : 1;
+  const handleAddNewIP = () => {
+  if (!newIP.ip_address) {
+    toast.error("❌ IP address is required!");
+    return;
+  }
+
+  // Require reason only if status = true (blocked)
+  if (newIP.status === true && !newIP.reason.trim()) {
+    toast.error("❌ Reason is required when blocking an IP!");
+    return;
+  }
+
+  const loadingToast = toast.loading("Adding new IP...");
+
+  fetch("http://localhost:3000/api/ip/addIP", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(newIP),
+  })
+    .then(res => res.json())
+    .then(data => {
+      toast.success(`✅ ${data.message}`, { id: loadingToast });
+
+      setNewIP({ ip_address: "", status: true, reason: "" });
+
+      document.getElementById("add_ip_modal").close();
+
+      fetch(`http://localhost:3000/api/ip/ipsTable?page=${ipPage}`)
+        .then(res => res.json())
+        .then(data => setIps(data.ips || []));
+    })
+    .catch(err => {
+      console.error("Add IP error:", err);
+      toast.error("❌ Failed to add IP!", { id: loadingToast });
+    });
+};
+
+  const handleUpdateSuspension = (id) => {
+    const loadingToast = toast.loading("Updating suspension...");
+    fetch(`http://localhost:3000/api/auth/updateSuspension/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        suspended_until: suspendedUntil[id],
+        suspended_reason: suspendedReason[id],
+      }),
+    })
+      .then(() => {
+        setUsers(prev => prev.map(u => 
+          u.id === id 
+            ? { ...u, suspended_until: suspendedUntil[id], suspension_reason: suspendedReason[id] } 
+            : u
+        ));
+        toast.success("✅ Suspension details updated successfully!", { id: loadingToast });
+      })
+      .catch(err => {
+        console.error("Update suspension error:", err);
+        toast.error("❌ Failed to update suspension!", { id: loadingToast });
+      });
   };
 
   const handleExportIPs = () => {
@@ -258,6 +316,7 @@ export default function Dashboard() {
     })
       .then(() => {
         setReports(prev => prev.map(r => (r.id === id ? { ...r, status: newStatus } : r)));
+        setAllReports(prev => prev.map(r => (r.id === id ? { ...r, status: newStatus } : r)));
         toast.success(`✅ Report status updated to ${newStatus}!`);
       })
       .catch(err => {
@@ -274,6 +333,7 @@ export default function Dashboard() {
     })
       .then(() => {
         setReports(prev => prev.map(r => (r.id === id ? { ...r, criticity: newCriticity } : r)));
+        setAllReports(prev => prev.map(r => (r.id === id ? { ...r, criticity: newCriticity } : r)));
         toast.success(`✅ Report criticity updated to ${newCriticity}!`);
       })
       .catch(err => {
@@ -478,9 +538,9 @@ export default function Dashboard() {
                           <td>
                             <button
                               className="btn btn-sm btn-primary"
-                              onClick={() => saveSuspension(u.id)}
+                              onClick={() => handleUpdateSuspension(u.id)}
                             >
-                              Save
+                              Update
                             </button>
                           </td>
                           <td>
@@ -536,6 +596,8 @@ export default function Dashboard() {
                     <FaFileImport className="mr-2"/> Import CSV
                     <input type="file" className="hidden" accept=".csv" onChange={handleImportIPs}/>
                   </label>
+                  <button className="btn btn-primary"onClick={() => document.getElementById("add_ip_modal").showModal()}>Add IP</button>
+
                 </div>
                 <div className="card bg-base-100 shadow-xl overflow-x-auto">
                   <table className="table">
@@ -552,11 +614,36 @@ export default function Dashboard() {
                         <tr key={ip.ip_address}>
                           <td className="font-mono">{ip.ip_address}</td>
                           <td>
-                            <span className={`badge ${ip.status ? "badge-success" : "badge-error"}`}>
-                              {ip.status ? "Allowed" : "Blocked"}
-                            </span>
+                            <select
+                              value={ip.status ? "allowed" : "blocked"}
+                              onChange={(e) => {
+                                const newStatus = e.target.value;
+                                const reason = newStatus === "blocked" ? (ip.reason || "spam") : null;
+                                handleUpdateIPStatus(ip.ip_address, newStatus, reason);
+                              }}
+                              className={`select select-sm select-bordered font-semibold text-white ${
+                                ip.status ? "bg-green-500" : "bg-red-500"
+                              }`}
+                            >
+                              <option value="allowed">Allowed</option>
+                              <option value="blocked">Blocked</option>
+                            </select>
                           </td>
-                          <td>{ip.reason || "N/A"}</td>
+                          <td>
+                            {!ip.status && (
+                              <select
+                                value={ip.reason || "spam"}
+                                onChange={(e) => handleUpdateIPStatus(ip.ip_address, "blocked", e.target.value)}
+                                className="select select-sm select-bordered"
+                              >
+                                <option value="spam">Spam</option>
+                                <option value="hack">Hack</option>
+                                <option value="risk">Risk</option>
+                                <option value="auto_block">Auto Block</option>
+                              </select>
+                            )}
+                            {ip.status && <span className="text-gray-400">N/A</span>}
+                          </td>
                           <td>{formatDate(ip.date_added)}</td>
                         </tr>
                       ))}
@@ -900,6 +987,7 @@ export default function Dashboard() {
               {selectedReplies && selectedReplies.length > 0 ? (
                 selectedReplies.map(rep => (
                   <div key={rep.id} className="card bg-base-200 p-4">
+                    <p className="font-semibold text-primary">{rep.sender_name}</p>
                     <p className="mt-2">{rep.message}</p>
                     <p className="text-xs text-gray-500 mt-2">
                       {formatDate(rep.date_created)}
@@ -916,6 +1004,107 @@ export default function Dashboard() {
                 onClick={() => document.getElementById("replies_modal").close()}
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </dialog>
+         {/* 🔥 MODAL CORRIGÉ */}
+        <dialog id="add_ip_modal" className="modal">
+          <div className="modal-box">
+            <h3 className="font-bold text-lg mb-4">Add New IP</h3>
+
+            {/* IP Address Input */}
+            <div className="form-control mb-3">
+              <label className="label">
+                <span className="label-text">IP Address</span>
+              </label>
+              <input
+                type="text"
+                placeholder="e.g., 192.168.1.100"
+                className="input input-bordered"
+                value={newIP.ip_address}
+                onChange={(e) => setNewIP({ ...newIP, ip_address: e.target.value })}
+              />
+            </div>
+
+            {/* Status Select */}
+            <div className="form-control mb-3">
+              <label className="label">
+                <span className="label-text">Status</span>
+              </label>
+              <select
+                className={`select select-bordered font-semibold text-white ${
+                  newIP.status === false ? "bg-red-500" : "bg-green-500"
+                }`}
+                value={newIP.status === false ? "blocked" : "allowed"}
+                onChange={(e) =>
+                  setNewIP({
+                    ...newIP,
+                    status: e.target.value === "blocked" ? false : true,
+                    reason: e.target.value === "allowed" ? "" : newIP.reason,
+                  })
+                }
+              >
+                <option value="allowed">✅ Allowed</option>
+                <option value="blocked">❌ Blocked</option>
+              </select>
+              <label className="label">
+                <span className="label-text-alt text-info">
+                  {newIP.status === false 
+                    ? "This IP will be BLOCKED" 
+                    : "This IP will be ALLOWED"}
+                </span>
+              </label>
+            </div>
+
+            {/* Reason Select - Only show if blocked */}
+            {newIP.status === false && (
+              <div className="form-control mb-3">
+                <label className="label">
+                  <span className="label-text">Reason (required)</span>
+                </label>
+                <select
+                  className="select select-bordered"
+                  value={newIP.reason}
+                  onChange={(e) => setNewIP({ ...newIP, reason: e.target.value })}
+                >
+                  <option value="">Select reason...</option>
+                  <option value="spam">Spam</option>
+                  <option value="hack">Hack</option>
+                  <option value="risk">Risk</option>
+                </select>
+              </div>
+            )}
+
+            {/* Debug Info */}
+            <div className="alert alert-info mb-3">
+              <div className="text-xs">
+                <strong>Debug:</strong>
+                <br/>
+                IP: {newIP.ip_address || "empty"}
+                <br/>
+                Status: {newIP.status === false ? "false (blocked)" : "true (allowed)"}
+                <br/>
+                Reason: {newIP.reason || "empty"}
+              </div>
+            </div>
+
+            <div className="modal-action">
+              <button 
+                className="btn btn-success" 
+                onClick={handleAddNewIP}
+              >
+                <FaShieldAlt className="mr-2" />
+                Add IP
+              </button>
+              <button 
+                className="btn" 
+                onClick={() => {
+                  setNewIP({ ip_address: "", status: false, reason: "" });
+                  document.getElementById("add_ip_modal").close();
+                }}
+              >
+                Cancel
               </button>
             </div>
           </div>

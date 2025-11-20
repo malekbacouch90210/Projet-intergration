@@ -8,7 +8,7 @@ router.get("/export", exportIPs);
 router.post("/import", upload.single("file"), importIPs);
 router.post("/addIP", addIpAdress)
 router.get("/searchIP", searchIP);
-router.patch("/updateIP/:ip_address", updateIPStatus);
+router.put("/updateIP/:ip_address", updateIPStatus); // Changé en PUT
 
 export default router;
 
