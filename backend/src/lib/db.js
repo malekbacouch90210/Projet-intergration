@@ -110,6 +110,186 @@ export const initDB = async () => {
         message TEXT NOT NULL,
         date_created TIMESTAMP DEFAULT NOW()
      )`;
+    // ==================== TABLES POUR ÉPIC 11 ====================
+
+    await sql`CREATE TABLE IF NOT EXISTS auth_methods (
+      method_id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      method_name VARCHAR(50) NOT NULL CHECK (method_name IN ('password', 'totp', 'sms', 'email', 'biometric', 'hardware_key')),
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      last_used TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, method_name)
+    )`;
+
+    await sql`CREATE TABLE IF NOT EXISTS available_auth_methods (
+      method_name VARCHAR(50) PRIMARY KEY,
+      display_name VARCHAR(100) NOT NULL,
+      description TEXT,
+      enabled BOOLEAN DEFAULT TRUE,
+      priority INT DEFAULT 100,
+      config JSONB DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`;
+
+    await sql`INSERT INTO available_auth_methods (method_name, display_name, description, enabled, priority, config) VALUES
+      ('password', 'Password', 'Traditional password authentication', true, 1, '{"min_length": 8, "require_uppercase": true, "require_special": true}'::jsonb),
+      ('totp', 'TOTP (2FA)', 'Time-based One-Time Password', true, 2, '{"timeout_seconds": 30}'::jsonb),
+      ('sms', 'SMS Code', 'SMS-based verification', true, 3, '{"provider": "twilio", "timeout_seconds": 300}'::jsonb),
+      ('email', 'Email Code', 'Email-based verification', true, 4, '{"timeout_seconds": 600}'::jsonb),
+      ('biometric', 'Biometric', 'Fingerprint or face recognition', false, 5, '{}'::jsonb),
+      ('hardware_key', 'Hardware Key', 'Physical security key (e.g., YubiKey)', false, 6, '{}'::jsonb)
+    ON CONFLICT (method_name) DO NOTHING`;
+
+    await sql`CREATE TABLE IF NOT EXISTS migration_campaigns (
+      campaign_id SERIAL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      target_method VARCHAR(50) NOT NULL,
+      notification_message TEXT,
+      deadline TIMESTAMP,
+      status VARCHAR(20) CHECK (status IN ('active', 'completed', 'cancelled')) DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT NOW(),
+      completed_at TIMESTAMP
+    )`;
+
+    await sql`CREATE TABLE IF NOT EXISTS campaign_users (
+      campaign_id INT REFERENCES migration_campaigns(campaign_id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      notified_at TIMESTAMP DEFAULT NOW(),
+      adopted BOOLEAN DEFAULT FALSE,
+      adopted_at TIMESTAMP,
+      PRIMARY KEY (campaign_id, user_id)
+    )`;
+
+    await sql`CREATE TABLE IF NOT EXISTS auth_security_rules (
+      rule_id SERIAL PRIMARY KEY,
+      rule_name VARCHAR(255) NOT NULL,
+      target_role VARCHAR(50),
+      target_department VARCHAR(100),
+      required_methods JSONB,
+      min_methods_count INT DEFAULT 1,
+      complexity_rules JSONB,
+      enforcement_date TIMESTAMP,
+      active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`;
+
+    await sql`CREATE TABLE IF NOT EXISTS auth_methods_audit_log (
+      log_id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      method_name VARCHAR(50) NOT NULL,
+      action_type VARCHAR(50) NOT NULL CHECK (action_type IN ('added', 'removed', 'enabled', 'disabled', 'modified')),
+      old_value JSONB,
+      new_value JSONB,
+      performed_by INT REFERENCES users(id) ON DELETE SET NULL,
+      ip_address VARCHAR(45),
+      user_agent TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`;
+
+    // Indexes
+    await sql`CREATE INDEX IF NOT EXISTS idx_auth_methods_user_id ON auth_methods(user_id)`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_auth_methods_active ON auth_methods(is_active)`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_campaign_users_campaign ON campaign_users(campaign_id)`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_campaign_users_user ON campaign_users(user_id)`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_audit_log_user ON auth_methods_audit_log(user_id)`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_audit_log_created ON auth_methods_audit_log(created_at DESC)`;
+
+    // Vue
+    await sql`CREATE OR REPLACE VIEW auth_methods_stats AS
+      SELECT method_name,
+             COUNT(*) as total_count,
+             COUNT(*) FILTER (WHERE is_active = true) as active_count,
+             COUNT(DISTINCT user_id) as unique_users,
+             AVG(EXTRACT(EPOCHS FROM (NOW() - last_used))/86400) as avg_days_since_use
+      FROM auth_methods
+      GROUP BY method_name`;
+
+    // Fonction corrigée
+    await sql`CREATE OR REPLACE FUNCTION get_obsolete_methods(days_threshold INT DEFAULT 90)
+      RETURNS TABLE (
+        user_id INT,
+        user_name VARCHAR,
+        user_email VARCHAR,
+        method_name VARCHAR,
+        last_used TIMESTAMP,
+        days_inactive NUMERIC
+      ) AS $$
+      BEGIN
+        RETURN QUERY
+        SELECT u.id,
+               u.name,
+               u.email,
+               am.method_name,
+               am.last_used,
+               EXTRACT(EPOCH FROM (NOW() - am.last_used))/86400::NUMERIC as days_inactive
+        FROM auth_methods am
+        JOIN users u ON am.user_id = u.id
+        WHERE am.last_used < NOW() - (days_threshold || ' days')::INTERVAL
+          AND am.is_active = true
+        ORDER BY am.last_used ASC;
+      END;
+      $$ LANGUAGE plpgsql`;
+
+    // Trigger function
+    await sql`CREATE OR REPLACE FUNCTION audit_auth_method_changes()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' THEN
+          INSERT INTO auth_methods_audit_log (user_id, method_name, action_type, new_value)
+          VALUES (NEW.user_id, NEW.method_name, 'added', to_jsonb(NEW));
+        ELSIF TG_OP = 'UPDATE' THEN
+          IF OLD.is_active != NEW.is_active THEN
+            INSERT INTO auth_methods_audit_log (user_id, method_name, action_type, old_value, new_value)
+            VALUES (NEW.user_id, NEW.method_name,
+                    CASE WHEN NEW.is_active THEN 'enabled' ELSE 'disabled' END,
+                    to_jsonb(OLD), to_jsonb(NEW));
+          ELSE
+            INSERT INTO auth_methods_audit_log (user_id, method_name, action_type, old_value, new_value)
+            VALUES (NEW.user_id, NEW.method_name, 'modified', to_jsonb(OLD), to_jsonb(NEW));
+          END IF;
+        ELSIF TG_OP = 'DELETE' THEN
+          INSERT INTO auth_methods_audit_log (user_id, method_name, action_type, old_value)
+          VALUES (OLD.user_id, OLD.method_name, 'removed', to_jsonb(OLD));
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql`;
+
+    await sql`DROP TRIGGER IF EXISTS auth_method_changes_trigger ON auth_methods`;
+    await sql`CREATE TRIGGER auth_method_changes_trigger
+      AFTER INSERT OR UPDATE OR DELETE ON auth_methods
+      FOR EACH ROW EXECUTE FUNCTION audit_auth_method_changes()`;
+
+        // Données de test migration_campaigns → version 100% sûre pour Neon
+    await sql`
+      INSERT INTO migration_campaigns (name, target_method, notification_message, deadline, status)
+      SELECT 'Upgrade to 2FA', 'totp', 'Please enable two-factor authentication for enhanced security', NOW() + INTERVAL '30 days', 'active'
+      WHERE NOT EXISTS (SELECT 1 FROM migration_campaigns WHERE name = 'Upgrade to 2FA')
+    `;
+
+    await sql`
+      INSERT INTO migration_campaigns (name, target_method, notification_message, deadline, status)
+      SELECT 'Deprecate SMS Auth', 'totp', 'SMS authentication will be deprecated. Please switch to TOTP', NOW() + INTERVAL '60 days', 'active'
+      WHERE NOT EXISTS (SELECT 1 FROM migration_campaigns WHERE name = 'Deprecate SMS Auth')
+    `;
+
+    // Données de test auth_security_rules → version 100% sûre
+    await sql`
+      INSERT INTO auth_security_rules (rule_name, target_role, required_methods, min_methods_count, enforcement_date, active)
+      SELECT 'Admin 2FA Required', 'admin', '["password", "totp"]'::jsonb, 2, NOW(), true
+      WHERE NOT EXISTS (SELECT 1 FROM auth_security_rules WHERE rule_name = 'Admin 2FA Required')
+    `;
+
+    await sql`
+      INSERT INTO auth_security_rules (rule_name, target_role, required_methods, min_methods_count, enforcement_date, active)
+      SELECT 'Standard User Security', NULL, '["password"]'::jsonb, 1, NOW(), true
+      WHERE NOT EXISTS (SELECT 1 FROM auth_security_rules WHERE rule_name = 'Standard User Security')
+    `;
+
+    // ==================== FIN ÉPIC 11 ====================
 
     // await sql `
     //    ALTER TABLE users
@@ -147,6 +327,8 @@ export const initDB = async () => {
 //     (5, 2, 'admin', 'We’re escalating this to the billing team.')
 //   RETURNING *;
 // `;
+
+
 
 
     console.log("✅ Database initialized (users + ips tables ready)");

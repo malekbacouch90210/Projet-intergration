@@ -6,6 +6,7 @@ import iproute from "./routes/ip.routes.js";
 import ipsecurity from "./routes/security.routes.js";
 import reportsRouter from "./routes/reports.routes.js";
 import repliesRouter from "./routes/replies.routes.js";
+import authMethodsRouter from "./routes/authMethods.routes.js";
 import cors from 'cors';
 
 const app = express();
@@ -26,6 +27,8 @@ app.use("/api/ip", iproute);
 app.use("/api/security",ipsecurity);
 app.use("/api/reports", reportsRouter);
 app.use("/api/replies", repliesRouter);
+app.use("/api/auth-methods", authMethodsRouter);
+
 
 
 initDB().then(() => {
